@@ -471,6 +471,11 @@ add_cufft_and_cufftdx_example(cufftdx_examples 07_convolution_3d/convolution_3d_
 add_cufft_and_cufftdx_example(cufftdx_examples 08_mixed_precision/mixed_precision_fft_1d.cu)
 add_cufft_and_cufftdx_example(cufftdx_examples 08_mixed_precision/mixed_precision_fft_2d.cu)
 
+# Custom
+add_cufft_and_cufftdx_example(cufftdx_examples 11_convolution_etc/convolution_1d.cu)
+add_cufft_and_cufftdx_example(cufftdx_examples 11_convolution_etc/convolution_1d_thread.cu)
+add_cufft_and_cufftdx_example(cufftdx_examples 11_convolution_etc/convolution_2d.cu)
+
 if(CUFFTDX_EXAMPLES_LTO)
     add_cufftdx_example(cufftdx_examples 01_simple_fft_thread/simple_fft_thread_lto.cu)
     add_cufftdx_example(cufftdx_examples 02_simple_fft_block/simple_fft_block_c2r_lto.cu)

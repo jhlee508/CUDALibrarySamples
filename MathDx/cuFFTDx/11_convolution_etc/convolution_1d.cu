@@ -11,7 +11,7 @@
 inline constexpr unsigned int warm_up_runs = 5;
 inline constexpr unsigned int performance_runs = 20;
 
-// #define CUFFTDX_EXAMPLE_DETAIL_DEBUG_CONV_1D
+#define CUFFTDX_EXAMPLE_DETAIL_DEBUG_CONV_1D
 
 template <unsigned int fft_size>
 __global__ void scaling_kernel(cufftComplex *data,
@@ -35,20 +35,21 @@ __global__ void scaling_kernel(cufftComplex *data,
 }
 
 template <unsigned int fft_size, class T>
-example::fft_results<T> cufft_conv_1d(T *data, const unsigned int bs,
-                                      cudaStream_t stream) {
+example::fft_results<T>
+cufft_conv_1d(T *input, T *output, const unsigned int bs, cudaStream_t stream) {
   using complex_type = cufftComplex;
   static_assert(sizeof(T) == sizeof(complex_type), "");
   static_assert(std::alignment_of_v<T> == std::alignment_of_v<complex_type>,
                 "");
 
-  complex_type *cufft_data = reinterpret_cast<complex_type *>(data);
+  complex_type *cufft_input = reinterpret_cast<complex_type *>(input);
+  complex_type *cufft_output = reinterpret_cast<complex_type *>(output);
 
   static constexpr unsigned int block_dim_scaling_kernel = 1024;
 
-  const unsigned int total_input_size = fft_size * bs;
+  const unsigned int total_fft_size = fft_size * bs;
   const unsigned int cuda_blocks =
-      (total_input_size + block_dim_scaling_kernel - 1) /
+      (total_fft_size + block_dim_scaling_kernel - 1) /
       block_dim_scaling_kernel;
 
   // Create cuFFT plan
@@ -61,33 +62,33 @@ example::fft_results<T> cufft_conv_1d(T *data, const unsigned int bs,
 
   // Correctness run
   CUFFT_CHECK_AND_EXIT(
-      cufftExecC2C(plan_forward, cufft_data, cufft_data, CUFFT_FORWARD));
+      cufftExecC2C(plan_forward, cufft_input, cufft_output, CUFFT_FORWARD));
   scaling_kernel<fft_size>
-      <<<cuda_blocks, block_dim_scaling_kernel, 0, stream>>>(
-          cufft_data, total_input_size, 1);
+      <<<cuda_blocks, block_dim_scaling_kernel, 0, stream>>>(cufft_output,
+                                                             total_fft_size, 1);
   CUFFT_CHECK_AND_EXIT(
-      cufftExecC2C(plan_inverse, cufft_data, cufft_data, CUFFT_INVERSE));
+      cufftExecC2C(plan_inverse, cufft_output, cufft_output, CUFFT_INVERSE));
   CUDA_CHECK_AND_EXIT(cudaDeviceSynchronize());
 
   // Copy total FFT results to host
-  std::vector<T> output_host(total_input_size,
+  std::vector<T> output_host(total_fft_size,
                              {std::numeric_limits<float>::quiet_NaN(),
                               std::numeric_limits<float>::quiet_NaN()});
-  CUDA_CHECK_AND_EXIT(cudaMemcpy(output_host.data(), cufft_data,
-                                 total_input_size * sizeof(complex_type),
+  CUDA_CHECK_AND_EXIT(cudaMemcpy(output_host.data(), cufft_output,
+                                 total_fft_size * sizeof(complex_type),
                                  cudaMemcpyDeviceToHost));
   CUDA_CHECK_AND_EXIT(cudaDeviceSynchronize());
 
   // Performance measurements
   auto time = example::measure_execution_ms(
       [&](cudaStream_t /* stream */) {
-        CUFFT_CHECK_AND_EXIT(
-            cufftExecC2C(plan_forward, cufft_data, cufft_data, CUFFT_FORWARD));
+        CUFFT_CHECK_AND_EXIT(cufftExecC2C(plan_forward, cufft_input,
+                                          cufft_output, CUFFT_FORWARD));
         scaling_kernel<fft_size>
             <<<cuda_blocks, block_dim_scaling_kernel, 0, stream>>>(
-                cufft_data, total_input_size, 1);
-        CUFFT_CHECK_AND_EXIT(
-            cufftExecC2C(plan_inverse, cufft_data, cufft_data, CUFFT_INVERSE));
+                cufft_output, total_fft_size, 1);
+        CUFFT_CHECK_AND_EXIT(cufftExecC2C(plan_inverse, cufft_output,
+                                          cufft_output, CUFFT_INVERSE));
       },
       warm_up_runs, performance_runs, stream);
 
@@ -99,7 +100,8 @@ example::fft_results<T> cufft_conv_1d(T *data, const unsigned int bs,
 
 template <class FFT, class IFFT>
 __launch_bounds__(FFT::max_threads_per_block) __global__
-    void convolution_kernel(typename FFT::value_type *data,
+    void convolution_kernel(typename FFT::value_type *input,
+                            typename FFT::value_type *output,
                             typename FFT::workspace_type workspace) {
   using complex_type = typename FFT::value_type;
   using scalar_type = typename complex_type::value_type;
@@ -110,7 +112,7 @@ __launch_bounds__(FFT::max_threads_per_block) __global__
   // ID of FFT in CUDA block, in range [0; FFT::ffts_per_block)
   const unsigned int local_fft_id = threadIdx.y;
   // Load data from global memory to registers
-  example::io<FFT>::load(data, thread_data, local_fft_id);
+  example::io<FFT>::load(input, thread_data, local_fft_id);
 
   // Execute FFT
   extern __shared__ __align__(alignof(float4)) complex_type shared_mem[];
@@ -127,11 +129,12 @@ __launch_bounds__(FFT::max_threads_per_block) __global__
   IFFT().execute(thread_data, shared_mem);
 
   // Save results
-  example::io<FFT>::store(thread_data, data, local_fft_id);
+  example::io<FFT>::store(thread_data, output, local_fft_id);
 }
 
 template <class FFT, class IFFT, class T>
-example::fft_results<T> cufftdx_conv_1d(T *data, const unsigned int bs_div_fpb,
+example::fft_results<T> cufftdx_conv_1d(T *input, T *output,
+                                        const unsigned int bs_div_fpb,
                                         cudaStream_t stream) {
   using complex_type = typename FFT::value_type;
   static constexpr unsigned int fft_size = cufftdx::size_of<FFT>::value;
@@ -140,6 +143,9 @@ example::fft_results<T> cufftdx_conv_1d(T *data, const unsigned int bs_div_fpb,
   static_assert(sizeof(T) == sizeof(complex_type), "Type size mismatch");
   static_assert(std::alignment_of_v<T> == std::alignment_of_v<complex_type>,
                 "Type alignment mismatch");
+
+  complex_type *cufftdx_input = reinterpret_cast<complex_type *>(input);
+  complex_type *cufftdx_output = reinterpret_cast<complex_type *>(output);
 
   // Increase max shared memory if needed
   CUDA_CHECK_AND_EXIT(cudaFuncSetAttribute(
@@ -154,21 +160,20 @@ example::fft_results<T> cufftdx_conv_1d(T *data, const unsigned int bs_div_fpb,
   // Correctness run (NOTE: batches for cuFFTDx = batch_size / ffts_per_block)
   convolution_kernel<FFT, IFFT>
       <<<bs_div_fpb, FFT::block_dim, FFT::shared_memory_size, stream>>>(
-          data, workspace);
+          cufftdx_input, cufftdx_output, workspace);
   CUDA_CHECK_AND_EXIT(cudaGetLastError());
   CUDA_CHECK_AND_EXIT(cudaDeviceSynchronize());
 
   // Copy total FFT results to host
-  static const size_t total_input_size =
+  static const size_t total_fft_size =
       bs_div_fpb * FFT::ffts_per_block * fft_size;
-  static const size_t total_input_size_bytes =
-      total_input_size * sizeof(complex_type);
+  static const size_t total_fft_size_bytes =
+      total_fft_size * sizeof(complex_type);
   std::vector<complex_type> output_host(
-      total_input_size, {std::numeric_limits<float>::quiet_NaN(),
-                         std::numeric_limits<float>::quiet_NaN()});
-  CUDA_CHECK_AND_EXIT(cudaMemcpy(output_host.data(), data,
-                                 total_input_size_bytes,
-                                 cudaMemcpyDeviceToHost));
+      total_fft_size, {std::numeric_limits<float>::quiet_NaN(),
+                       std::numeric_limits<float>::quiet_NaN()});
+  CUDA_CHECK_AND_EXIT(cudaMemcpy(output_host.data(), cufftdx_output,
+                                 total_fft_size_bytes, cudaMemcpyDeviceToHost));
   CUDA_CHECK_AND_EXIT(cudaDeviceSynchronize());
 
   // Performance measurements
@@ -176,7 +181,7 @@ example::fft_results<T> cufftdx_conv_1d(T *data, const unsigned int bs_div_fpb,
       [&](cudaStream_t stream) {
         convolution_kernel<FFT, IFFT>
             <<<bs_div_fpb, FFT::block_dim, FFT::shared_memory_size, stream>>>(
-                data, workspace);
+                cufftdx_input, cufftdx_output, workspace);
       },
       warm_up_runs, performance_runs, stream);
 
@@ -201,7 +206,7 @@ template <unsigned int Arch> void conv_1d() {
 
   // Number of FFTs (convolutions)
   // NOTE: Should be multiple of ffts_per_block
-  static constexpr unsigned int batches = 16; 
+  static constexpr unsigned int batches = 2;
 
   constexpr bool use_suggested = false; // Whether to use suggested values
 
@@ -249,7 +254,6 @@ template <unsigned int Arch> void conv_1d() {
                 : (typeid(precision_type) == typeid(double)) ? "double"
                                                              : "unknown";
   std::cout << " Precision: " << precision_str << "\n";
-  
 
   // Host data
   auto input_size = batches * fft_size;
@@ -260,42 +264,47 @@ template <unsigned int Arch> void conv_1d() {
   }
 
 #ifdef CUFFTDX_EXAMPLE_DETAIL_DEBUG_CONV_1D
-  std::cout << "input [1st FFT] (batch):\n";
-  for (size_t i = 0; i < fft_size; i++) {
+  std::cout << "input:\n";
+  for (size_t i = 0; i < host_data.size(); i++) {
     std::cout << host_data[i].x << " " << host_data[i].y << std::endl;
   }
 #endif
 
-  // Copy to device
-  complex_type *data;
-  CUDA_CHECK_AND_EXIT(cudaMalloc(&data, input_size_bytes));
-  CUDA_CHECK_AND_EXIT(cudaMemcpy(data, host_data.data(), input_size_bytes,
+  // Device buffers
+  complex_type *input;
+  complex_type *output;
+  CUDA_CHECK_AND_EXIT(cudaMalloc(&input, input_size_bytes));
+  CUDA_CHECK_AND_EXIT(cudaMalloc(&output, input_size_bytes));
+
+  // Copy host data to device buffer
+  CUDA_CHECK_AND_EXIT(cudaMemcpy(input, host_data.data(), input_size_bytes,
                                  cudaMemcpyHostToDevice));
 
   cudaStream_t stream;
   CUDA_CHECK_AND_EXIT(cudaStreamCreate(&stream));
 
   // cuFFTDx convolution
-  auto cufftdx_results =
-      cufftdx_conv_1d<FFT, IFFT>(data, batches / ffts_per_block, stream);
+  auto cufftdx_results = cufftdx_conv_1d<FFT, IFFT>(
+      input, output, batches / ffts_per_block, stream);
 
   // cuFFT convolution as reference
-  auto cufft_results = cufft_conv_1d<fft_size>(data, batches, stream);
+  auto cufft_results = cufft_conv_1d<fft_size>(input, output, batches, stream);
 
   // TODO: cuFFT convolution with Callback
 
   CUDA_CHECK_AND_EXIT(cudaStreamDestroy(stream));
-  CUDA_CHECK_AND_EXIT(cudaFree(data));
+  CUDA_CHECK_AND_EXIT(cudaFree(input));
+  CUDA_CHECK_AND_EXIT(cudaFree(output));
 
 #ifdef CUFFTDX_EXAMPLE_DETAIL_DEBUG_CONV_1D
-  std::cout << "output of cuFFTDx: [1st FFT (batch)]:\n";
-  for (size_t i = 0; i < fft_size; i++) {
+  std::cout << "output of cuFFTDx:\n";
+  for (size_t i = 0; i < cufftdx_results.output.size(); i++) {
     std::cout << cufftdx_results.output[i].x << " "
               << cufftdx_results.output[i].y << std::endl;
   }
 
-  std::cout << "output of cuFFT: [1st FFT (batch)]:\n";
-  for (size_t i = 0; i < fft_size; i++) {
+  std::cout << "output of cuFFT:\n";
+  for (size_t i = 0; i < cufft_results.output.size(); i++) {
     std::cout << cufft_results.output[i].x << " " << cufft_results.output[i].y
               << std::endl;
   }
