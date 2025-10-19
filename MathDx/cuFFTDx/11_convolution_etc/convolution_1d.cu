@@ -102,7 +102,8 @@ template <class FFT, class IFFT>
 __launch_bounds__(FFT::max_threads_per_block) __global__
     void convolution_kernel(typename FFT::value_type *input,
                             typename FFT::value_type *output,
-                            typename FFT::workspace_type workspace) {
+                            typename FFT::workspace_type workspaceF,
+                            typename IFFT::workspace_type workspaceI) {
   using complex_type = typename FFT::value_type;
   using scalar_type = typename complex_type::value_type;
 
@@ -116,7 +117,7 @@ __launch_bounds__(FFT::max_threads_per_block) __global__
 
   // Execute FFT
   extern __shared__ __align__(alignof(float4)) complex_type shared_mem[];
-  FFT().execute(thread_data, shared_mem, workspace);
+  FFT().execute(thread_data, shared_mem,  workspaceF);
 
   // Scale values (point-wise operation: normalizing with 1/N)
   scalar_type scale = 1.0 / cufftdx::size_of<FFT>::value;
@@ -126,7 +127,7 @@ __launch_bounds__(FFT::max_threads_per_block) __global__
   }
 
   // Execute inverse FFT
-  IFFT().execute(thread_data, shared_mem);
+  IFFT().execute(thread_data, shared_mem, workspaceI);
 
   // Save results
   example::io<FFT>::store(thread_data, output, local_fft_id);
@@ -154,13 +155,15 @@ example::fft_results<T> cufftdx_conv_1d(T *input, T *output,
 
   // Create workspaces for FFTs
   cudaError_t error_code;
-  auto workspace = cufftdx::make_workspace<FFT>(error_code, stream);
+  auto workspaceF = cufftdx::make_workspace<FFT>(error_code, stream);
+  CUDA_CHECK_AND_EXIT(error_code);
+  auto workspaceI = cufftdx::make_workspace<IFFT>(error_code, stream);
   CUDA_CHECK_AND_EXIT(error_code);
 
   // Correctness run (NOTE: batches for cuFFTDx = batch_size / ffts_per_block)
   convolution_kernel<FFT, IFFT>
       <<<bs_div_fpb, FFT::block_dim, FFT::shared_memory_size, stream>>>(
-          cufftdx_input, cufftdx_output, workspace);
+          cufftdx_input, cufftdx_output, workspaceF, workspaceI);
   CUDA_CHECK_AND_EXIT(cudaGetLastError());
   CUDA_CHECK_AND_EXIT(cudaDeviceSynchronize());
 
@@ -181,7 +184,7 @@ example::fft_results<T> cufftdx_conv_1d(T *input, T *output,
       [&](cudaStream_t stream) {
         convolution_kernel<FFT, IFFT>
             <<<bs_div_fpb, FFT::block_dim, FFT::shared_memory_size, stream>>>(
-                cufftdx_input, cufftdx_output, workspace);
+                cufftdx_input, cufftdx_output, workspaceF, workspaceI);
       },
       warm_up_runs, performance_runs, stream);
 
