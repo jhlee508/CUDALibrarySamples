@@ -163,8 +163,8 @@ template <int Arch> int conv_2d() {
   // Is this forward or inverse convolution?
   static constexpr bool is_forward = false;
 
-  // Use double (as in your 3D sample) for apples-to-apples with cuFFT reference
-  constexpr bool is_double_precision = true;
+  // Use double (or float)?
+  constexpr bool is_double_precision = false;
   using precision = std::conditional_t<is_double_precision, double, float>;
 
   using fftx_partial =
