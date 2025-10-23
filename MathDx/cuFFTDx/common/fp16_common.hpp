@@ -1,3 +1,5 @@
+#include <cuda_fp16.h>
+#include <cufftdx.hpp>
 
 #ifndef CUFFTDX_EXAMPLE_FP16_COMMON_HPP_
 #define CUFFTDX_EXAMPLE_FP16_COMMON_HPP_

@@ -115,6 +115,21 @@ namespace example {
             return error;
         }
 
+        template<class T, class K>
+static inline fft_signal_error calculate_for_half2_values(const std::vector<T>& results, const std::vector<K>& reference) {
+    fft_signal_error error {0.0, 0.0, 0.0, 0};
+    double           nerror = 0.0;
+    double           derror = 0.0;
+    for (size_t i = 0; i < results.size(); i++) {
+        __half2 res_half2 = results[i];
+        __half2 ref_half2 = reference[i];
+        calculate_for_real_value(__half2float(__low2half(res_half2)), __half2float(__low2half(ref_half2)), error, i * 2, nerror, derror);
+        calculate_for_real_value(__half2float(__high2half(res_half2)), __half2float(__high2half(ref_half2)), error, i * 2 + 1, nerror, derror);
+    }
+    error.l2_relative_error = std::sqrt(nerror) / std::sqrt(derror);
+    return error;
+}
+
     private:
         template<class T, class K>
         static inline void calculate_for_real_value(const T&          results_value,

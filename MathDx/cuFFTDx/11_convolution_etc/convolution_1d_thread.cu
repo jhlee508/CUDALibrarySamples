@@ -6,8 +6,9 @@
 
 #include "../common/common.hpp"
 #include "../common/mixed_io.hpp"
+#include "../common/random.hpp"
 
-#define CUFFTDX_EXAMPLE_DETAIL_DEBUG_CONV_1D_THREAD
+// #define CUFFTDX_EXAMPLE_DETAIL_DEBUG_CONV_1D_THREAD
 
 inline constexpr unsigned int warm_up_runs = 5;
 inline constexpr unsigned int performance_runs = 20;
@@ -219,17 +220,17 @@ int main(int, char **) {
   // Host data
   auto input_size = threads_count * fft_size;
   auto input_size_bytes = input_size * sizeof(complex_type);
+#ifdef CUFFTDX_EXAMPLE_DETAIL_DEBUG_CONV_1D
   std::vector<complex_type> host_data(input_size);
-
-  for (size_t i = 0; i < host_data.size(); i++) {
+  for (size_t i = 0; i < input_size; i++) {
     host_data[i] = complex_type{precision_type(i), -precision_type(i)};
   }
-
-#ifdef CUFFTDX_EXAMPLE_DETAIL_DEBUG_CONV_1D_THREAD
   std::cout << "input:\n";
   for (size_t i = 0; i < host_data.size(); i++) {
     std::cout << host_data[i].x << " " << host_data[i].y << std::endl;
   }
+#else
+  auto host_data = example::get_random_complex_data<precision_type>(input_size, -1, 1);
 #endif
 
   // Device buffers
